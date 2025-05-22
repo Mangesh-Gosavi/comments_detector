@@ -9,6 +9,10 @@ from sklearn.metrics import accuracy_score
 
 app = Flask(__name__)
 
+@app.route('/', methods=['GET'])
+def home():
+    return "Server is running", 200
+
 @app.route('/', methods=['POST'])
 def comment():
     if request.method == 'POST':
