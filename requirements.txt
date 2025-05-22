@@ -1,0 +1,4 @@
+Flask==2.3.3
+deep-translator==1.11.4
+pandas==2.2.2
+scikit-learn==1.4.2
