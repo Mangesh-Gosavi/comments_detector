@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from deep_translator import GoogleTranslator
-
+import os
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
@@ -61,6 +61,7 @@ def comment():
             return jsonify({'error': 'No text provided'}), 400
 
 if __name__ == '__main__':
-    app.run()
-    print("Server Listening....")
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
+
 
