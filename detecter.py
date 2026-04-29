@@ -1,12 +1,14 @@
+import os
+import gc
+import joblib
+import pandas as pd
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deep_translator import GoogleTranslator
-import os
-import joblib
-import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from dotenv import load_dotenv
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -16,124 +18,115 @@ MODEL_PATH = "model.pkl"
 VECTORIZER_PATH = "vectorizer.pkl"
 DATA_PATH = "commentsdata.csv"
 
-# ==============================
-# TRAIN / LOAD MODEL
-# ==============================
+MAX_TRAIN_ROWS = 3000
+MAX_FEATURES = 500
+
 
 def train_and_save_model():
-    print("Training model...")
+    print("Training model (fallback)...")
 
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(DATA_PATH, usecols=["text", "label"])
 
-    X = df['text']
-    y = df['label']
+    if len(df) > MAX_TRAIN_ROWS:
+        df = df.sample(n=MAX_TRAIN_ROWS, random_state=42)
 
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=1000)
+    df = df.dropna(subset=["text", "label"])
+
+    X = df["text"].astype(str)
+    y = df["label"].astype(int)
+
+    vectorizer = TfidfVectorizer(
+        ngram_range=(1, 1),
+        max_features=MAX_FEATURES,
+        min_df=2,
+        sublinear_tf=True,
+        dtype="float32",
+    )
     X_features = vectorizer.fit_transform(X)
 
     model = LogisticRegression(
-        C=0.001,
-        penalty='l2',
-        class_weight='balanced',
-        solver='liblinear'
+        C=0.1,
+        penalty="l2",
+        class_weight="balanced",
+        solver="liblinear",
+        max_iter=200,
     )
     model.fit(X_features, y)
 
-    joblib.dump(model, MODEL_PATH)
-    joblib.dump(vectorizer, VECTORIZER_PATH)
+    joblib.dump(model, MODEL_PATH, compress=3)
+    joblib.dump(vectorizer, VECTORIZER_PATH, compress=3)
+
+    del df, X, y, X_features
+    gc.collect()
 
     print("Model trained & saved")
     return model, vectorizer
 
 
-def load_model():
-    if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
-        print("Loading saved model...")
-        model = joblib.load(MODEL_PATH)
-        vectorizer = joblib.load(VECTORIZER_PATH)
-    else:
-        model, vectorizer = train_and_save_model()
+def load_or_train():
+    try:
+        if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+            print("Loading saved model...")
+            return joblib.load(MODEL_PATH), joblib.load(VECTORIZER_PATH)
+    except Exception as e:
+        print(f"Failed to load model files, retraining: {e}")
 
-    return model, vectorizer
+    return train_and_save_model()
 
 
-model, vectorizer = load_model()
+model, vectorizer = load_or_train()
 
-# ==============================
-# SAVE DATA
-# ==============================
 
 def save_to_dataset(text, label):
     try:
-        new_data = pd.DataFrame({
-            "text": [text],
-            "label": [label]
-        })
-
-        new_data.to_csv(DATA_PATH, mode='a', header=False, index=False)
-        print("Saved to dataset")
-
+        pd.DataFrame({"text": [text], "label": [label]}).to_csv(
+            DATA_PATH, mode="a", header=False, index=False
+        )
     except Exception as e:
         print("Error saving:", str(e))
 
 
-# ==============================
-# ROUTES
-# ==============================
-
-@app.route('/', methods=['GET'])
+@app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "Server is running"}), 200
 
 
-@app.route('/predict', methods=['POST'])
+@app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json()
+    data = request.get_json(silent=True)
 
-    if not data or 'text' not in data:
-        return jsonify({'error': 'No text provided'}), 400
+    if not data or "text" not in data:
+        return jsonify({"error": "No text provided"}), 400
 
     try:
-        input_text = data['text']
+        input_text = data["text"]
 
-        # Translate to English
-        translator = GoogleTranslator(source='auto', target='en')
-        translation = translator.translate(input_text)
+        translation = GoogleTranslator(source="auto", target="en").translate(input_text)
 
-        # Predict
         features = vectorizer.transform([translation])
         prediction = int(model.predict(features)[0])
 
         result = "Abusive" if prediction == 1 else "Not Abusive"
 
-        # ✅ Append to dataset
         save_to_dataset(translation, prediction)
 
         return jsonify({
             "original": input_text,
             "translated": translation,
-            "prediction": result
+            "prediction": result,
         }), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-# ==============================
-# MANUAL RETRAIN ROUTE
-# ==============================
-
-@app.route('/retrain', methods=['POST'])
+@app.route("/retrain", methods=["POST"])
 def retrain():
     global model, vectorizer
     model, vectorizer = train_and_save_model()
     return jsonify({"message": "Model retrained successfully"}), 200
 
 
-# ==============================
-# MAIN
-# ==============================
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 1000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
