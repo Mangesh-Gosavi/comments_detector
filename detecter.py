@@ -1,63 +1,139 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from deep_translator import GoogleTranslator
 import os
+import joblib
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 
-# Load dataset and train model once when app starts
-df = pd.read_csv("commentsdata.csv")
+MODEL_PATH = "model.pkl"
+VECTORIZER_PATH = "vectorizer.pkl"
+DATA_PATH = "commentsdata.csv"
 
-X = df['text']
-y = df['label']
+# ==============================
+# TRAIN / LOAD MODEL
+# ==============================
 
-vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=1000)
-X_features = vectorizer.fit_transform(X)
+def train_and_save_model():
+    print("Training model...")
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X_features, y, test_size=0.3, random_state=42)
+    df = pd.read_csv(DATA_PATH)
 
-model = LogisticRegression(C=0.001, penalty='l2', class_weight='balanced', solver='liblinear')
-model.fit(X_train, y_train)
+    X = df['text']
+    y = df['label']
 
-# Optional: print accuracy to logs
-y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print(f"Model accuracy: {accuracy * 100:.2f}%")
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=1000)
+    X_features = vectorizer.fit_transform(X)
+
+    model = LogisticRegression(
+        C=0.001,
+        penalty='l2',
+        class_weight='balanced',
+        solver='liblinear'
+    )
+    model.fit(X_features, y)
+
+    joblib.dump(model, MODEL_PATH)
+    joblib.dump(vectorizer, VECTORIZER_PATH)
+
+    print("Model trained & saved")
+    return model, vectorizer
+
+
+def load_model():
+    if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+        print("Loading saved model...")
+        model = joblib.load(MODEL_PATH)
+        vectorizer = joblib.load(VECTORIZER_PATH)
+    else:
+        model, vectorizer = train_and_save_model()
+
+    return model, vectorizer
+
+
+model, vectorizer = load_model()
+
+# ==============================
+# SAVE DATA
+# ==============================
+
+def save_to_dataset(text, label):
+    try:
+        new_data = pd.DataFrame({
+            "text": [text],
+            "label": [label]
+        })
+
+        new_data.to_csv(DATA_PATH, mode='a', header=False, index=False)
+        print("Saved to dataset")
+
+    except Exception as e:
+        print("Error saving:", str(e))
+
+
+# ==============================
+# ROUTES
+# ==============================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Server is running", 200
+    return jsonify({"message": "Server is running"}), 200
 
-@app.route('/', methods=['POST'])
-def comment():
+
+@app.route('/predict', methods=['POST'])
+def predict():
     data = request.get_json()
-    print("Received data:", data)
+
     if not data or 'text' not in data:
         return jsonify({'error': 'No text provided'}), 400
 
     try:
+        input_text = data['text']
+
+        # Translate to English
         translator = GoogleTranslator(source='auto', target='en')
-        translation = translator.translate(data['text'])
-        print('Translation:', translation)
+        translation = translator.translate(input_text)
 
-        new_text_features = vectorizer.transform([translation])
-        prediction = model.predict(new_text_features)
-        print("Predicted label:", prediction)
+        # Predict
+        features = vectorizer.transform([translation])
+        prediction = int(model.predict(features)[0])
 
-        message = "Abusive" if prediction[0] == 1 else "Not Abusive"
-        return jsonify({"message": message}), 200
+        result = "Abusive" if prediction == 1 else "Not Abusive"
+
+        # ✅ Append to dataset
+        save_to_dataset(translation, prediction)
+
+        return jsonify({
+            "original": input_text,
+            "translated": translation,
+            "prediction": result
+        }), 200
 
     except Exception as e:
-        print("Error:", str(e))
-        return jsonify({'error': f"An error occurred: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
 
+
+# ==============================
+# MANUAL RETRAIN ROUTE
+# ==============================
+
+@app.route('/retrain', methods=['POST'])
+def retrain():
+    global model, vectorizer
+    model, vectorizer = train_and_save_model()
+    return jsonify({"message": "Model retrained successfully"}), 200
+
+
+# ==============================
+# MAIN
+# ==============================
 
 if __name__ == '__main__':
-    app.run()
-    print("Server Listening....")
-
+    port = int(os.environ.get("PORT", 1000))
+    app.run(host='0.0.0.0', port=port)
