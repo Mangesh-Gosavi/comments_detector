@@ -19,7 +19,8 @@ VECTORIZER_PATH = "vectorizer.pkl"
 DATA_PATH = "commentsdata.csv"
 
 MAX_TRAIN_ROWS = 3000
-MAX_FEATURES = 500
+MAX_FEATURES = 5000
+CONFIDENCE_THRESHOLD = 0.9
 
 
 def train_and_save_model():
@@ -36,7 +37,7 @@ def train_and_save_model():
     y = df["label"].astype(int)
 
     vectorizer = TfidfVectorizer(
-        ngram_range=(1, 1),
+        ngram_range=(1, 2),
         max_features=MAX_FEATURES,
         min_df=2,
         sublinear_tf=True,
@@ -104,11 +105,14 @@ def predict():
         translation = GoogleTranslator(source="auto", target="en").translate(input_text)
 
         features = vectorizer.transform([translation])
-        prediction = int(model.predict(features)[0])
+        probabilities = model.predict_proba(features)[0]
+        prediction = int(probabilities.argmax())
+        confidence = float(probabilities.max())
 
         result = "Abusive" if prediction == 1 else "Not Abusive"
 
-        save_to_dataset(translation, prediction)
+        if confidence >= CONFIDENCE_THRESHOLD:
+            save_to_dataset(translation, prediction)
 
         return jsonify({
             "original": input_text,
